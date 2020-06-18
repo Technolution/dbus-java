@@ -104,7 +104,9 @@ public class MethodCall extends Message {
         }
         logger.debug("Appended body, type: {} start: {} end: {} size: {}",sig, c, getByteCounter(), (getByteCounter() - c));
         marshallint(getByteCounter() - c, blen, 0, 4);
-        logger.debug("marshalled size ({}): {}",blen, Hexdump.format(blen));
+        if (logger.isDebugEnabled()) { 
+        	logger.debug("marshalled size ({}): {}",blen, Hexdump.format(blen));
+        }
     }
 
     private static long REPLY_WAIT_TIMEOUT = 20000;

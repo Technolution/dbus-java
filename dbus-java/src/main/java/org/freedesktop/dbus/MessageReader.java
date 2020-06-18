@@ -176,7 +176,7 @@ public class MessageReader implements Closeable {
             header = null;
             throw exRe;
         }
-        logger.debug("=> {}", m);
+        logger.debug("timestamp[{}] ms <- {}", System.currentTimeMillis(), m);
         buf = null;
         tbuf = null;
         body = null;

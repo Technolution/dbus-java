@@ -32,7 +32,11 @@ public class MessageWriter implements Closeable {
     }
 
     public void writeMessage(Message m) throws IOException {
-        logger.debug("<= {}", m);
+        long timeStamp = System.currentTimeMillis();
+        logger.debug("[{}] -> {}", timeStamp, m);
+    	if (logger.isTraceEnabled()) {
+            logger.trace("{}", m.detailedString());
+    	}
         if (null == m) {
             return;
         }
@@ -41,15 +45,19 @@ public class MessageWriter implements Closeable {
             return;
         }
 
-        logger.debug("Writing all {} buffers simultaneously to Unix Socket", m.getWireData().length );
         for (byte[] buf : m.getWireData()) {
-            logger.trace("({}):{}", buf, (null == buf ? "" : Hexdump.format(buf)));
+        	if (logger.isTraceEnabled()) {
+        		logger.trace("({}):{}", buf, (null == buf ? "" : Hexdump.format(buf)));
+        	}
             if (null == buf) {
                 break;
             }
             outputStream.write(buf);
         }
         outputStream.flush();
+        if (logger.isDebugEnabled()) {
+        	logger.debug("[{}] message send in '{}' ms", timeStamp, System.currentTimeMillis() - timeStamp);
+        }
     }
 
     @Override

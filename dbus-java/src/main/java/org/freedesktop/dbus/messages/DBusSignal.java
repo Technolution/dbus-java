@@ -31,6 +31,7 @@ import org.freedesktop.dbus.connections.AbstractConnection;
 import org.freedesktop.dbus.exceptions.DBusException;
 import org.freedesktop.dbus.exceptions.MessageFormatException;
 import org.freedesktop.dbus.interfaces.DBusInterface;
+import org.freedesktop.dbus.messages.Message.HeaderField;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -216,7 +217,9 @@ public class DBusSignal extends Message {
                 params[0] = getPath();
                 System.arraycopy(args, 0, params, 1, args.length);
 
-                logger.debug("Creating signal of type {} with parameters {}", clazz, Arrays.deepToString(params));
+                if (logger.isDebugEnabled()) { 
+                	logger.debug("Creating signal of type {} with parameters {}", clazz, Arrays.deepToString(params));
+                }
                 s = con.newInstance(params);
             }
             s.getHeaders().putAll(getHeaders());
@@ -343,7 +346,9 @@ public class DBusSignal extends Message {
 
     @Override
     public String toString() {
-        return "DBusSignal [clazz=" + clazz + "]";
+        StringBuffer sb = new StringBuffer();
+    	sb.append("DBusSignal - ");
+    	sb.append(super.toString());
+        return sb.toString();
     }
-
 }
