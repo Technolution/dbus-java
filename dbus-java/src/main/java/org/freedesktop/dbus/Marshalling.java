@@ -633,9 +633,9 @@ public final class Marshalling {
 
     @SuppressWarnings("unchecked")
     public static Object[] deSerializeParameters(Object[] _parameters, Type[] _types, AbstractConnection _conn) throws Exception {
-==== BASE ====
-        LOGGER.trace("Deserializing from {} to {} ", Arrays.deepToString(_parameters), Arrays.deepToString(_types));
-==== BASE ====
+        if (LOGGER.isTraceEnabled()) {
+            LOGGER.trace("Deserializing from {} to {} ", Arrays.deepToString(_parameters), Arrays.deepToString(_types));
+        }
         if (null == _parameters) {
             return null;
         }
