@@ -31,10 +31,8 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
-import org.freedesktop.DBus;
 import org.freedesktop.dbus.DBusMatchRule;
 import org.freedesktop.dbus.RemoteInvocationHandler;
 import org.freedesktop.dbus.RemoteObject;
@@ -42,9 +40,11 @@ import org.freedesktop.dbus.SignalTuple;
 import org.freedesktop.dbus.connections.AbstractConnection;
 import org.freedesktop.dbus.connections.IDisconnectAction;
 import org.freedesktop.dbus.errors.Error;
+import org.freedesktop.dbus.exceptions.DBusConnectionException;
 import org.freedesktop.dbus.exceptions.DBusException;
 import org.freedesktop.dbus.exceptions.DBusExecutionException;
 import org.freedesktop.dbus.exceptions.NotConnected;
+import org.freedesktop.dbus.interfaces.DBus;
 import org.freedesktop.dbus.interfaces.DBusInterface;
 import org.freedesktop.dbus.interfaces.DBusSigHandler;
 import org.freedesktop.dbus.interfaces.Introspectable;
@@ -52,12 +52,9 @@ import org.freedesktop.dbus.messages.DBusSignal;
 import org.freedesktop.dbus.messages.ExportedObject;
 import org.freedesktop.dbus.messages.MethodCall;
 import org.freedesktop.dbus.types.UInt32;
+import org.freedesktop.dbus.utils.Util;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import com.github.hypfvieh.util.FileIoUtil;
-import com.github.hypfvieh.util.StringUtil;
-import com.github.hypfvieh.util.SystemUtil;
 
 /**
  * Handles a connection to DBus.
@@ -158,17 +155,6 @@ public final class DBusConnection extends AbstractConnection {
         }
     }
 
-    private static DBusConnection getConnection(Supplier<String> _addressGenerator, boolean _registerSelf, boolean _shared, int _timeout) throws DBusException {
-        if (_addressGenerator == null) {
-            throw new DBusException("Invalid address generator");
-        }
-        String address = _addressGenerator.get();
-        if (address == null) {
-            throw new DBusException("null is not a valid DBUS address");
-        }
-        return getConnection(address, _registerSelf, _shared, _timeout);
-    }
-
     /**
      * Connect to DBus.
      * If a connection already exists to the specified Bus, a reference to it is returned.
@@ -216,73 +202,82 @@ public final class DBusConnection extends AbstractConnection {
     public static DBusConnection getConnection(DBusBusType _bustype, boolean _shared, int _timeout) throws DBusException {
         switch (_bustype) {
             case SYSTEM:
-                DBusConnection systemConnection = getConnection(() -> {
-                    String bus = System.getenv("DBUS_SYSTEM_BUS_ADDRESS");
-                    if (bus == null) {
-                        bus = DEFAULT_SYSTEM_BUS_ADDRESS;
-                    }
-                    return bus;
-                }, true, _shared, _timeout);
-                return systemConnection;
+                return getConnection(getSystemConnection(), true, _shared, _timeout);
             case SESSION:
-                DBusConnection sessionConnection = getConnection(() -> {
-                    String s = null;
-
-                    // MacOS support: e.g DBUS_LAUNCHD_SESSION_BUS_SOCKET=/private/tmp/com.apple.launchd.4ojrKe6laI/unix_domain_listener
-                    if (SystemUtil.isMacOs()) {
-                        s = "unix:path=" + System.getenv("DBUS_LAUNCHD_SESSION_BUS_SOCKET");
-
-                    } else { // all others (linux)
-                        s = System.getenv("DBUS_SESSION_BUS_ADDRESS");
-                    }
-
-                    if (s == null) {
-                        // address gets stashed in $HOME/.dbus/session-bus/`dbus-uuidgen --get`-`sed 's/:\(.\)\..*/\1/' <<<
-                        // $DISPLAY`
-                        String display = System.getenv("DISPLAY");
-                        if (null == display) {
-                            throw new RuntimeException("Cannot Resolve Session Bus Address");
-                        }
-                        if (!display.startsWith(":") && display.contains(":")) { // display seems to be a remote display
-                                                                                 // (e.g. X forward through SSH)
-                            display = display.substring(display.indexOf(':'));
-                        }
-
-                        try {
-                            String uuid = getDbusMachineId();
-                            String homedir = System.getProperty("user.home");
-                            File addressfile = new File(homedir + "/.dbus/session-bus",
-                                    uuid + "-" + display.replaceAll(":([0-9]*)\\..*", "$1"));
-                            if (!addressfile.exists()) {
-                                throw new RuntimeException("Cannot Resolve Session Bus Address");
-                            }
-                            Properties readProperties = FileIoUtil.readProperties(addressfile);
-                            String sessionAddress = readProperties.getProperty("DBUS_SESSION_BUS_ADDRESS");
-                            
-                            if (StringUtil.isEmpty(sessionAddress)) {
-                                throw new RuntimeException("Cannot Resolve Session Bus Address");
-                            }
-
-                            // sometimes (e.g. Ubuntu 18.04) the returned address is wrapped in single quotes ('), we have to remove them
-                            if (sessionAddress.matches("^'[^']+'$")) {
-                                sessionAddress = sessionAddress.replaceFirst("^'([^']+)'$", "$1");
-                            }
-                            
-                            return sessionAddress;
-                        } catch (DBusException _ex) {
-                            throw new RuntimeException("Cannot Resolve Session Bus Address", _ex);
-                        }
-                    }
-
-                    return s;
-
-                }, true, _shared, _timeout);
-
-                return sessionConnection;
+                return getConnection(getSessionConnection(), true, _shared, _timeout);
             default:
                 throw new DBusException("Invalid Bus Type: " + _bustype);
         }
+    }
 
+    /**
+     * Determine the address of the DBus system connection.
+     *
+     * @return String
+     */
+    private static String getSystemConnection() {
+        String bus = System.getenv("DBUS_SYSTEM_BUS_ADDRESS");
+        if (bus == null) {
+            bus = DEFAULT_SYSTEM_BUS_ADDRESS;
+        }
+        return bus;
+    }
+
+    /**
+     * Connect to the BUS.
+     * If a connection to the specified Bus already exists and shared-flag is true, a reference to it is returned.
+     * Otherwise a new connection will be created.
+     *
+     * @return {@link DBusConnection}
+     *
+     * @throws DBusConnectionException if session connection could not be found
+     */
+    private static String getSessionConnection() throws DBusConnectionException {
+        String s = null;
+
+        // MacOS support: e.g DBUS_LAUNCHD_SESSION_BUS_SOCKET=/private/tmp/com.apple.launchd.4ojrKe6laI/unix_domain_listener
+        if (Util.isMacOs()) {
+            s = "unix:path=" + System.getenv("DBUS_LAUNCHD_SESSION_BUS_SOCKET");
+
+        } else { // all others (linux)
+            s = System.getenv("DBUS_SESSION_BUS_ADDRESS");
+        }
+
+        if (s == null) {
+            // address gets stashed in $HOME/.dbus/session-bus/`dbus-uuidgen --get`-`sed 's/:\(.\)\..*/\1/' <<<
+            // $DISPLAY`
+            String display = System.getenv("DISPLAY");
+            if (null == display) {
+                throw new DBusConnectionException("Cannot Resolve Session Bus Address");
+            }
+            if (!display.startsWith(":") && display.contains(":")) { // display seems to be a remote display
+                                                                     // (e.g. X forward through SSH)
+                display = display.substring(display.indexOf(':'));
+            }
+
+            String uuid = getDbusMachineId();
+            String homedir = System.getProperty("user.home");
+            File addressfile = new File(homedir + "/.dbus/session-bus",
+                    uuid + "-" + display.replaceAll(":([0-9]*)\\..*", "$1"));
+            if (!addressfile.exists()) {
+                throw new DBusConnectionException("Cannot Resolve Session Bus Address");
+            }
+            Properties readProperties = Util.readProperties(addressfile);
+            String sessionAddress = readProperties.getProperty("DBUS_SESSION_BUS_ADDRESS");
+
+            if (Util.isEmpty(sessionAddress)) {
+                throw new DBusConnectionException("Cannot Resolve Session Bus Address");
+            }
+
+            // sometimes (e.g. Ubuntu 18.04) the returned address is wrapped in single quotes ('), we have to remove them
+            if (sessionAddress.matches("^'[^']+'$")) {
+                sessionAddress = sessionAddress.replaceFirst("^'([^']+)'$", "$1");
+            }
+
+            return sessionAddress;
+        }
+
+        return s;
     }
 
     private AtomicInteger getConcurrentConnections() {
@@ -296,38 +291,43 @@ public final class DBusConnection extends AbstractConnection {
      * @return machine-id string, never null
      * @throws DBusException if machine-id could not be found
      */
-    public static String getDbusMachineId() throws DBusException {
-        if (isWindows()) {
+    public static String getDbusMachineId() throws DBusConnectionException {
+        if (Util.isWindows()) {
             return getDbusMachineIdOnWindows();
         }
     	File uuidfile = determineMachineIdFile();
-        String uuid = FileIoUtil.readFileToString(uuidfile);
-        if (StringUtil.isEmpty(uuid)) {
-            throw new DBusException("Cannot Resolve Session Bus Address: MachineId file is empty.");
+        String uuid = Util.readFileToString(uuidfile);
+        if (Util.isEmpty(uuid)) {
+            throw new DBusConnectionException("Cannot Resolve Session Bus Address: MachineId file is empty.");
         }
 
         return uuid;
     }
 
-	private static File determineMachineIdFile() throws DBusException {
+    /**
+     * Tries to find the DBus machine-id file in different locations.
+     *
+     * @return File with machine-id
+     * @throws DBusConnectionException when no machine-id file could be found
+     */
+	private static File determineMachineIdFile() throws DBusConnectionException {
 		List<String> locationPriorityList = Arrays.asList(System.getenv(DBUS_MACHINE_ID_SYS_VAR),
 				"/var/lib/dbus/machine-id", "/usr/local/var/lib/dbus/machine-id", "/etc/machine-id");
 		return locationPriorityList.stream()
 				.filter(s -> s != null)
 				.map(s -> new File(s))
-				.filter(f -> f.exists())
+				.filter(f -> f.exists() && f.length() > 0)
 				.findFirst()
-				.orElseThrow(() -> new DBusException("Cannot Resolve Session Bus Address: MachineId file can not be found"));
+				.orElseThrow(() -> new DBusConnectionException("Cannot Resolve Session Bus Address: MachineId file can not be found"));
 	}
-	
-    private static boolean isWindows() {
-        String osName = System.getProperty("os.name");
-        return osName == null ? false : osName.toLowerCase().startsWith("windows");
-    }
-	
+
+	/**
+	 * Generates a fake machine-id when DBus is running on Windows.
+	 * @return String
+	 */
 	private static String getDbusMachineIdOnWindows() {
 	    // we create a fake id on windows
-	    return String.format("%s@%s", SystemUtil.getCurrentUser(), SystemUtil.getHostName());
+	    return String.format("%s@%s", Util.getCurrentUser(), Util.getHostName());
 	}
 
     private DBusConnection(String _address, boolean _shared, boolean _registerSelf, String _machineId, int timeout) throws DBusException {
@@ -341,7 +341,7 @@ public final class DBusConnection extends AbstractConnection {
         // register disconnect handlers
         DBusSigHandler<?> h = new SigHandler();
         addSigHandlerWithoutMatch(org.freedesktop.dbus.interfaces.Local.Disconnected.class, h);
-        addSigHandlerWithoutMatch(org.freedesktop.DBus.NameAcquired.class, h);
+        addSigHandlerWithoutMatch(org.freedesktop.dbus.interfaces.DBus.NameAcquired.class, h);
 
         // register ourselves if not disabled
         if (_registerSelf) {
@@ -809,7 +809,7 @@ public final class DBusConnection extends AbstractConnection {
 
         SignalTuple key = new SignalTuple(_rule.getInterface(), _rule.getMember(), _rule.getObject(), _rule.getSource());
         Queue<DBusSigHandler<? extends DBusSignal>> dbusSignalList = getHandledSignals().get(key);
-        
+
         if (null != dbusSignalList) {
             dbusSignalList.remove(_handler);
             if (dbusSignalList.isEmpty()) {
@@ -909,10 +909,10 @@ public final class DBusConnection extends AbstractConnection {
         Objects.requireNonNull(_handler, "Handler cannot be null");
 
         AtomicBoolean addMatch = new AtomicBoolean(false); // flag to perform action if this is a new signal key
-        
+
         SignalTuple key = new SignalTuple(_rule.getInterface(), _rule.getMember(), _rule.getObject(), _rule.getSource());
 
-        Queue<DBusSigHandler<? extends DBusSignal>> dbusSignalList = 
+        Queue<DBusSigHandler<? extends DBusSignal>> dbusSignalList =
             getHandledSignals().computeIfAbsent(key, v -> {
                 Queue<DBusSigHandler<? extends DBusSignal>> signalList  = new ConcurrentLinkedQueue<>();
                 addMatch.set(true);
@@ -987,19 +987,19 @@ public final class DBusConnection extends AbstractConnection {
                     List<String> lBusNames = busnames.stream()
             	        .filter(busName -> busName != null && !(busName.length() > MAX_NAME_LENGTH || !BUSNAME_REGEX.matcher(busName).matches()))
             	        .collect(Collectors.toList());
-    
-    
+
+
                     lBusNames.forEach(busName -> {
                             try {
                                 releaseBusName(busName);
-    
+
                             } catch (DBusException _ex) {
                                 logger.error("Error while releasing busName '" + busName + "'.", _ex);
                             }
-    
+
             	        });
         	    }
-                
+
                 // remove all exported objects before disconnecting
                 Map<String, ExportedObject> exportedObjects = getExportedObjects();
                 synchronized (exportedObjects) {
@@ -1074,10 +1074,10 @@ public final class DBusConnection extends AbstractConnection {
     @Override
     public void addGenericSigHandler(DBusMatchRule _rule, DBusSigHandler<DBusSignal> _handler) throws DBusException {
         SignalTuple key = new SignalTuple(_rule.getInterface(), _rule.getMember(), _rule.getObject(), _rule.getSource());
-        
+
         AtomicBoolean addMatch = new AtomicBoolean(false); // flag to perform action if this is a new signal key
 
-        Queue<DBusSigHandler<DBusSignal>> genericSignalsList = 
+        Queue<DBusSigHandler<DBusSignal>> genericSignalsList =
                 getGenericHandledSignals().computeIfAbsent(key, v -> {
                     Queue<DBusSigHandler<DBusSignal>> signalsList = new ConcurrentLinkedQueue<>();
                     addMatch.set(true);
@@ -1114,9 +1114,9 @@ public final class DBusConnection extends AbstractConnection {
                     }
                 } catch (DBusException exDb) {
                 }
-            } else if (_signal instanceof org.freedesktop.DBus.NameAcquired) {
+            } else if (_signal instanceof org.freedesktop.dbus.interfaces.DBus.NameAcquired) {
                 synchronized (busnames) {
-                    busnames.add(((org.freedesktop.DBus.NameAcquired) _signal).name);
+                    busnames.add(((org.freedesktop.dbus.interfaces.DBus.NameAcquired) _signal).name);
                 }
             }
         }
