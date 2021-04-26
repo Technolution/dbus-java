@@ -290,7 +290,6 @@ public final class Marshalling {
                     }
                 }
                 _out[_level].append(')');
-
             } else {
                 boolean found = false;
 
@@ -301,8 +300,9 @@ public final class Marshalling {
                         break;
                     }
                 }
-                if (!found) {
-                    throw new DBusException("Exporting non-exportable type: " + _dataType);
+                // ignore when an interface class
+                if (!found && !dataTypeClazz.isInterface()) {
+                	 throw new DBusException("Exporting non-exportable type: " + _dataType);
                 }
             }
         }
